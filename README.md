@@ -1,4 +1,13 @@
-# 销售三单匹配系统（妙可 toB）
+# 销售三单匹配系统（妙可 ToB）
+
+> 销售订单、发货、SAP 开票三单匹配，支持 OMS 与 DMS 数据源，用于对账与差异分析。
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/Scope-OMS%20%7C%20DMS-1F6FB2" alt="Scope">
+  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
+  <img src="https://img.shields.io/github/last-commit/Gvmeakiss/sales-oms-dms-match?label=updated" alt="Updated">
+</p>
 
 > 销售订单、发货、SAP 开票三单匹配系统，支持 OMS 与 DMS 数据匹配，用于对账和差异分析。
 
@@ -678,3 +687,13 @@ MIT License
 ---
 
 *最后更新：2025-02-08*
+
+---
+
+<div align="center">
+
+**James Li · 审计数据分析工具集**
+
+📫 本工具用于内部审计与数据核对，辅助分析但不替代专业判断，不作为对外签字版本。
+
+</div>
