@@ -94,6 +94,40 @@ python match_dms_full_year_from_sql.py
 ## 📄 License
 MIT（Copyright © 2026 Gvmeakiss (James Li)）。
 
+## 🧠 核心方法论 / Core Methodology
+
+> 可复用的「多源三单匹配 + 5 类差异分类」方法论。下列每一条都对应仓库内的真实代码，可迁移到任意「业务系统单据 + ERP 开票」的对账场景。
+> *A reusable multi-source three-way (order / delivery / invoice) reconciliation method. Every rule below maps to actual code in this repo.*
+
+**1. 双源同构 —— 一套口径，两条流水线**
+OMS 与 DMS 各自独立跑完整全年匹配，但差异公式、阈值、5 类标签完全一致，因此两源结果可横向比较、拼成同一张全量差异视图。OMS：`preprocess_full_year.py`（SQL→PKL）→ `match_oms_full_year.py`；DMS：`match_dms_full_year_from_sql.py` 直接读 SQL + 发票 Excel。
+*Two independent pipelines share one identical difference/classification rule set, keeping results comparable across sources.*
+
+**2. 匹配键 —— `order-item` 单行粒度**
+不做单据级汇总对账，而是下沉到「订单号 + 物料编码」拼接键：OMS 为 `sale_order_no + item_code`，发货侧优先取 `DD` 开头的主单号、否则退回订单号；DMS 用 `['DMS订单','物料编码']` 双列键（订单侧 `platform_order_no`、发货侧 `external_order_no`、发票侧 `DMS销售单号`）。`_norm_code()` 统一去掉 float 读入产生的 `.0` 尾缀，避免「同一物料两个键」。三张单据先各自 `groupby(键).agg`（金额/数量 `sum`、描述字段 `first`），再以**发票为基准**左连发货与订单；另用 `outer` 连接反查「有订单/发货但无开票」的行。
+*Line-level key (order no. + material code); amounts summed per key, invoice side used as the merge base.*
+
+**3. 差异计算 —— 数量与金额分轴**
+OMS 逐行算 `订单-开票数量`、`发货-开票数量`、`订单-发货数量`、`订单-发票金额`；DMS 算 `SAP-DMS订单金额`、`SAP-DMS发货数量(基本单位)`。金额一律 `round(2)`，数量区分销售单位与基本单位，避免单位换算误差被误判为差异。
+*Quantity and amount are treated as two independent axes, so a unit-conversion gap never masks a pricing gap.*
+
+**4. 5 类自动分类 —— 阈值化差异定性**
+先判 `2.Not test`：关键字段（OMS 取订单金额/订单数量/发货数量/开票金额/开票数量；DMS 取 DMS订单金额/DMS发货数量）任一为空即入此类，代表「三单不齐、无法测试」而非「不一致」。其余按两轴阈值交叉打标：**金额容差 1.0**（吸收分单尾差与四舍五入）、**数量容差 0.01**（吸收小数精度；OMS 数量差另采用严格等于 0 的判定）——
+`1.1 完全匹配`（两轴均在容差内）/ `1.2 金额不一致`（仅金额超差）/ `1.3 数量不一致`（仅数量超差）/ `1.4 均不一致`（两轴同时超差）。四类互斥且并集完整，可直接作为抽样与穿行测试的分层依据。
+*Five mutually exclusive buckets: missing-field "Not test" first, then a 2×2 threshold matrix (amount 1.0 / quantity 0.01).*
+
+**5. PKL 缓存加速 —— 重跑成本从分钟级降到秒级**
+SQL 与多月 Excel 的解析结果落到 `PKL/`（`oms_*_full_year.pkl` / `dms_*_full_year.pkl`），命中缓存即跳过全部解析。调参阈值、改分组口径时只需重跑匹配段，适合审计现场反复迭代。
+*Parsed sources cached as pickles; re-runs skip all SQL/Excel parsing.*
+
+**6. 分组导出与大文件分表 —— 结果可交付**
+按 `销售组织` 字段把指定主体（`1240` / `1250` / `1260`，同时兼容字符串与数字型取值）与其余主体拆成独立文件，各文件均含「汇总表（分类 × 记录数 × 开票金额，含总计行）+ 全部数据 + 5 类明细 sheet」；再单独导出各组的 `2.Not test` 未匹配文件。单 sheet 超过 Excel 上限 `1,048,575` 行时自动按 `_P1/_P2` 切分（sheet 名截断至 31 字符），DMS 侧超限时先落一份 UTF-8-SIG 全量 CSV 兜底。
+*Per-entity workbooks with a summary sheet + 5 category sheets; auto sheet-splitting at the Excel row cap, with a full CSV fallback.*
+
+**7. 脏数据容错 —— 让口径不被格式问题带偏**
+① **列名错位纠错**：发货 SQL 只有 7 列（缺主单号）时，按「第 2 列多为纯数字、第 5 列多为 `DD` 前缀」的分布特征（50% 占比启发式）判定订单号与料号被写串，自动对调两列；② **多候选列兼容**：不同月份导出的列名不一致，故对 OMS 单号（`OMS销售单号`/`OMS订单号`/`销售单号`）、物料（`物料编码`/`料号`/`品号`）、金额（`含税金额`/`实际金额`）、数量（`开票数量（销售单位）`/`（基本单位数量）`）、发票类型（`发票类型.1`/`发票类型`）等均按候选列表自动探测，并按「精确匹配优先、包含匹配兜底」降级；③ **列数分支对齐**：11 列月份补 `line_amount`/`channel_name2` 为 NaN 后与 13 列月份合并，发票多月 `concat(join='outer')` 做列并集对齐；④ 编码由 `chardet` 自动探测，`errors='ignore'` 容忍脏字节；⑤ 发票类型过滤同时支持代码型（形如 `ZA01` 的四位码）与文本型（含「标准发票 2B」）两种表达。
+*Column-shift auto-correction, multi-candidate column probing, column-count branch alignment, and encoding auto-detection keep the matching key stable across heterogeneous monthly exports.*
+
 ---
 
 <div align="center">
